@@ -287,6 +287,12 @@ namespace HappyTravel.Edo.Api.Infrastructure
                 options.CounterpartyAccountIncreasedManuallyTemplateId = counterpartyAccountIncreasedManuallyTemplateId;
                 options.CounterpartyAccountDecreasedManuallyTemplateId = counterpartyAccountDecreasedManuallyTemplateId;
             });
+
+            var bookingConfirmationTemplateId = mailSettings[configuration["Edo:Email:BookingConfirmationTemplateId"]];
+            services.Configure<PropertyOwnerMailingOptions>(options => 
+            {
+                options.BookingConfirmationTemplateId = bookingConfirmationTemplateId;
+            });
             #endregion
 
             #region tag processing options
