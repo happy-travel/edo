@@ -6,7 +6,9 @@ using CSharpFunctionalExtensions;
 using HappyTravel.Edo.Api.AdministratorServices.Models;
 using HappyTravel.Edo.Api.Infrastructure.FunctionalExtensions;
 using HappyTravel.Edo.Api.Models.Management.AuditEvents;
+using HappyTravel.Edo.Api.Services;
 using HappyTravel.Edo.Api.Services.Management;
+using HappyTravel.Edo.Api.Services.Markups.Templates;
 using HappyTravel.Edo.Common.Enums;
 using HappyTravel.Edo.Common.Enums.Markup;
 using HappyTravel.Edo.Data;
@@ -18,10 +20,13 @@ namespace HappyTravel.Edo.Api.AdministratorServices
     public class AgencyDiscountManagementService : IAgencyDiscountManagementService
     {
         public AgencyDiscountManagementService(EdoContext context,
-            IManagementAuditService managementAuditService)
+            IManagementAuditService managementAuditService,
+            IMarkupPolicyTemplateService templateService
+            )
         {
             _context = context;
             _managementAuditService = managementAuditService;
+            _templateService = templateService;
         }
 
 
@@ -57,6 +62,7 @@ namespace HappyTravel.Edo.Api.AdministratorServices
             return ValidatePercent(createDiscountRequest.DiscountPercent)
                 .Bind(ValidateTargetMarkup)
                 .Bind(ValidateAgency)
+                .Bind(DiscountDoesntExceedMarkups)
                 .BindWithTransaction(_context, () => Result.Success()
                     .Tap(UpdateDiscount)
                     .Bind(WriteAuditLog));
@@ -69,7 +75,7 @@ namespace HappyTravel.Edo.Api.AdministratorServices
 
                 if (targetMarkup is null)
                     return Result.Failure($"Could not find markup policy with id {createDiscountRequest.TargetMarkupId}");
-
+                
                 if (targetMarkup.ScopeType != MarkupPolicyScopeType.Global)
                     return Result.Failure("Cannot apply discount to non-global markup policy");
 
@@ -81,6 +87,24 @@ namespace HappyTravel.Edo.Api.AdministratorServices
                 => await _context.Agencies.AnyAsync(a => a.Id == agencyId)
                     ? Result.Success()
                     : Result.Failure($"Could not find an agency with id {agencyId}");
+
+
+            async Task<Result> DiscountDoesntExceedMarkups()
+            {
+                var markupPolicy = await _context.MarkupPolicies.SingleOrDefaultAsync(x => x.Id == createDiscountRequest.TargetMarkupId);
+                var markupFunction = _templateService.CreateFunction(markupPolicy.Id, markupPolicy.TemplateSettings);
+                
+                var allDiscounts = await _context.Discounts
+                    .Where(x => x.TargetPolicyId == markupPolicy.Id)
+                    .Where(d => d.TargetAgencyId == agencyId)
+                    .Where(d => d.IsActive)
+                    .Select(d => d.DiscountPercent)
+                    .ToListAsync();
+                
+                allDiscounts.Add(createDiscountRequest.DiscountPercent);
+
+                return DiscountsValidator.DiscountsDontExceedMarkups(allDiscounts, markupFunction);
+            }
 
 
             Task UpdateDiscount()
@@ -106,10 +130,30 @@ namespace HappyTravel.Edo.Api.AdministratorServices
         {
             return await Get(agencyId, discountId)
                 .Check(_ => ValidatePercent(editDiscountRequest.DiscountPercent))
+                .Check(DiscountDoesntExceedMarkups)
                 .BindWithTransaction(_context, discount => Result.Success(discount)
                     .Tap(Update)
                     .Bind(WriteAuditLog));
 
+
+            async Task<Result> DiscountDoesntExceedMarkups(Discount discount)
+            {
+                var markupPolicy = await _context.MarkupPolicies.SingleOrDefaultAsync(x => x.Id == discount.TargetPolicyId);
+                var markupFunction = _templateService.CreateFunction(markupPolicy.Id, markupPolicy.TemplateSettings);
+                
+                var allDiscounts = await _context.Discounts
+                    .Where(x => x.TargetPolicyId == markupPolicy.Id)
+                    .Where(d => d.TargetAgencyId == agencyId)
+                    .Where(d => d.IsActive)
+                    .Where(d => d.Id != discountId) // excluding discount we want to edit
+                    .Select(d => d.DiscountPercent)
+                    .ToListAsync();
+                
+                allDiscounts.Add(editDiscountRequest.DiscountPercent);
+
+                return DiscountsValidator.DiscountsDontExceedMarkups(allDiscounts, markupFunction);
+            }
+            
 
             Task Update(Discount discount)
                 => this.Update(discount, d =>
@@ -190,10 +234,10 @@ namespace HappyTravel.Edo.Api.AdministratorServices
                 ? Result.Success()
                 : Result.Failure($"Could not set discount percent with value more than {MaxDiscountPercent}");
 
-
         private const decimal MaxDiscountPercent = 5;
         
         private readonly EdoContext _context;
         private readonly IManagementAuditService _managementAuditService;
+        private readonly IMarkupPolicyTemplateService _templateService;
     }
 }

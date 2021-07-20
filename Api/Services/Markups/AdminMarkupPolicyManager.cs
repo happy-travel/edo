@@ -116,6 +116,7 @@ namespace HappyTravel.Edo.Api.Services.Markups
                 return Result.Failure("Could not find policy");
 
             var (_, isFailure, markupPolicy, error) = await ValidateSettings()
+                .Bind(DiscountsDontExceedMarkups)
                 .Bind(UpdatePolicy)
                 .Tap(p => WriteAuditLog(p, MarkupPolicyEventOperationType.Modified));
 
@@ -126,6 +127,20 @@ namespace HappyTravel.Edo.Api.Services.Markups
 
 
             Result ValidateSettings() => _templateService.Validate(settings.TemplateId, settings.TemplateSettings);
+            
+            
+            async Task<Result> DiscountsDontExceedMarkups()
+            {
+                var allDiscounts = await _context.Discounts
+                    .Where(x => x.IsActive)
+                    .Where(x => x.TargetAgencyId == policy.AgencyId)
+                    .Where(x => x.TargetPolicyId == policy.Id)
+                    .Select(x => x.DiscountPercent)
+                    .ToListAsync();
+
+                var markupFunction = _templateService.CreateFunction(policy.TemplateId, policy.TemplateSettings);
+                return DiscountsValidator.DiscountsDontExceedMarkups(allDiscounts, markupFunction);
+            }
 
 
             async Task<Result<MarkupPolicy>> UpdatePolicy()
